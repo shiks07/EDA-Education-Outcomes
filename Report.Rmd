@@ -1,0 +1,398 @@
+---
+title: "HW3: Educational and Disciplinary Outcomes in Pennsylvania"
+author: "Shikha Goel, Malvika Singh, Elizabeth Speigle"
+output: html_document
+---
+
+About the data: The Civil Rights Data Collection (CRDC) 2015-16 includes data from a survey of public school districts in the United States for school year 2015-16. It is submitted biannually to the US Department of Education Office of Civil Rights. Data includes school characteristics, services, and outcomes, most of which are disaggregated by race, ethnicity, gender, limited English proficiency status, and disability. Each school district submits data from the relevant year and certifies that it is correct. The public-use data is suppressed to protect confidentiality. Data can be downloaded here: https://ocrdata.ed.gov/DownloadDataFile.
+Data Definitions: https://ocrdata.ed.gov/DataDefinitions
+Data Notes: https://ocrdata.ed.gov/DataNotes
+User Manual: https://ocrdata.ed.gov/DataFileUsersManual 
+
+We are particularly interested in exploring variables related to discipline in schools, including in-school suspensions, absenteeism, and students reporting harassment or bullying on the basis of race and sex. Each of these variables is reported in the CRDC disaggregated by race, ethnicity, sex, and disability.
+
+We tested whether there are significant differences in these indicators by subgroup using ANOVA followed by t-tests. For example, is there a difference in the rates of in-school suspensions by ethnicity?
+
+We also see if the reported variables are correlated with various school characteristics, including student/teacher ratio, teacher absenteeism, and school expenditures per student.
+
+
+```{r packages}
+library(dplyr)
+library(tidyr)
+library(naniar)
+library(plotly)
+library(corrplot)
+```
+
+Import dataset and subset to PA and relevant columns:
+
+```{r import}
+schoolData <- read.csv(file = "CRDC 2015-16 School Data.csv")
+PA <- subset(schoolData, schoolData$LEA_STATE == "PA")
+PA$KEY <- paste(PA$LEAID, PA$SCHID)  ## create a primary key based on school district and campus codes
+dim(PA)
+
+## Cleaning the data includes removing indicators for NULL values:
+## -7 indicates data that should have been reported but was not
+## -5 indicates a district was unable to provide all required data but will in the future.
+## -9 indicates a data element is not applicable (eg no students of a particular ethnicity). Some rows that should be -9 have a 0 because the skip logic did not always work.
+## -2 indicates a small value due to confidentiality.
+
+PA <- replace_with_na_all(data = PA, condition = ~.x %in% c(-9, -7, -5, -2)) 
+
+```
+```{r school characteristics}
+## Subset PA to remove outliers in several columns:
+
+## Subset PA to rows where total FTE of teachers is greater than one:
+PA <- subset(PA, SCH_FTETEACH_TOT > 1)
+
+## Subset PA to rows where total expenditures is not greater than 100,000,000 
+## (There are a few extreme outliers):
+PA <- subset(PA, SCH_SAL_TOTPERS_WFED < 100000000)
+PA <- subset(PA, SCH_NPE_WFED < 100000000)
+
+## Create fields for school characteristics:
+
+PA$SAL_PER_TEACH <- with(PA, SCH_SAL_TEACH_WOFED / SCH_FTE_TEACH_WOFED)
+
+PA$RATE_LEP <- with(PA, ifelse((TOT_ENR_M + TOT_ENR_F)>(SCH_ENR_LEP_M + SCH_ENR_LEP_F),
+                               (SCH_ENR_LEP_M + SCH_ENR_LEP_F)/(TOT_ENR_M + TOT_ENR_F), NA))
+
+PA$STU_TEA_RATIO <- with(PA, (TOT_ENR_M + TOT_ENR_F) / SCH_FTETEACH_TOT)
+
+PA$TEA_ABSENT <- with(PA, ifelse(SCH_FTETEACH_TOT>SCH_FTETEACH_ABSENT, 
+                                 SCH_FTETEACH_ABSENT / SCH_FTETEACH_TOT, NA))
+
+PA$EXP_STU <- with(PA, (SCH_SAL_TOTPERS_WFED + SCH_NPE_WFED) / (TOT_ENR_M + TOT_ENR_F))
+
+## Create fields for overall rates:
+PA$RATE_ABSENT <- with(PA, ifelse((TOT_ENR_M + TOT_ENR_F)>=(TOT_ABSENT_M + TOT_ABSENT_F),
+                                  (TOT_ABSENT_M + TOT_ABSENT_F)/(TOT_ENR_M + TOT_ENR_F), NA))
+
+PA$RATE_ISS <- with(PA, ifelse((TOT_ENR_M + TOT_ENR_F)>=(TOT_DISCWODIS_ISS_M + TOT_DISCWODIS_ISS_F),
+                               (TOT_DISCWODIS_ISS_M + TOT_DISCWODIS_ISS_F)/(TOT_ENR_M + TOT_ENR_F), NA))
+
+PA$RATE_BULLY <- with(PA, ifelse((TOT_ENR_M + TOT_ENR_F)>=(TOT_HBREPORTED_RAC_M + TOT_HBREPORTED_RAC_F),
+                                 (TOT_HBREPORTED_RAC_M + TOT_HBREPORTED_RAC_F)/(TOT_ENR_M + TOT_ENR_F), NA))
+
+
+
+
+## Create data frame with school characteristics and overall rates:
+PA_compare <- subset(PA, select = 
+                       c(SAL_PER_TEACH, RATE_LEP, STU_TEA_RATIO, TEA_ABSENT, EXP_STU,
+                         RATE_ABSENT, RATE_ISS, RATE_BULLY))
+
+## Summary of relevant fields from PA:
+sapply(PA_compare, summary)
+
+## create correlation matrix for listed variables, using only complete observations without NAs
+corr_matrix <- cor(PA_compare, use = "complete.obs")
+
+## create a visualization of the correlation matrix
+corrplot(corr_matrix, tl.col = "black", method = "color", order = "hclust", addCoef.col = "black",
+         sig.level = 0.01, insig = "blank",type = "upper", diag = FALSE)
+
+## create an R squared correlation matrix:
+corr_matrix_2 <- corr_matrix ^ 2
+
+corrplot(corr_matrix_2, tl.col = "black", method = "color", order = "hclust", addCoef.col = "black",
+         sig.level = 0.01, insig = "blank",type = "upper", diag = FALSE)
+
+## None of the school characteristics appear to be very correlated with the overall rates 
+## of ISS, absenteeism, or reported bullying. The highest correlation is between 
+## student/teacher ratio and expenditures per student, followed by the rate of 
+## limited English proficient students and the overall rate of absenteeism.
+
+## heat map version of the correlation matrix to make it compatible with ploty output
+vals <- unique(scales::rescale(c(corr_matrix)))
+o <- order(vals, decreasing = FALSE)
+cols <- scales::col_numeric("Reds", domain = NULL)(vals)
+colz <- setNames(data.frame(vals[o], cols[o]), NULL)
+
+trial <- plot_ly( x = c("SAL_PER_TEACH","STU_TEA_RATIO","TEA_ABSENT", "RATE_LEP", "RATE_ABSENT", "EXP_STU", "RATE_ISS", "RATE_BULLY"),y = c("SAL_PER_TEACH","STU_TEA_RATIO","TEA_ABSENT", "RATE_LEP", "RATE_ABSENT", "EXP_STU", "RATE_ISS", "RATE_BULLY"),z = corr_matrix, type = "heatmap",colorscale = colz)
+trial
+
+
+```
+
+
+Calculate rates by ethnicity and gender for reported bullying, absenteeism, and ISS:
+
+```{r rates}
+
+## Create rates of each indicator by ethnicity and gender, 
+## where there are more than 5 students in each subgroup and 
+##the number enrolled is greater than the numerator 
+## (to eliminate misreported data with rates over 100%):
+
+## Enrollment by ethnicity
+PA <- PA %>% mutate(SCH_ENR_HI = SCH_ENR_HI_M + SCH_ENR_HI_F)
+PA <- PA %>% mutate(SCH_ENR_BL = SCH_ENR_BL_M + SCH_ENR_BL_F)
+PA <- PA %>% mutate(SCH_ENR_WH = SCH_ENR_WH_M + SCH_ENR_WH_F)
+PA <- PA %>% mutate(SCH_ENR_AS = SCH_ENR_AS_M + SCH_ENR_AS_F)
+
+
+
+## Bullying rates
+PA <- PA %>% mutate(SCH_BULLY_HI = SCH_HBREPORTED_RAC_HI_M + SCH_HBREPORTED_RAC_HI_F)
+PA <- PA %>% mutate(SCH_BULLY_BL = SCH_HBREPORTED_RAC_BL_M + SCH_HBREPORTED_RAC_BL_F)
+PA <- PA %>% mutate(SCH_BULLY_WH = SCH_HBREPORTED_RAC_WH_M + SCH_HBREPORTED_RAC_WH_F)
+PA <- PA %>% mutate(SCH_BULLY_AS = SCH_HBREPORTED_RAC_AS_M + SCH_HBREPORTED_RAC_AS_F)
+
+PA <- PA %>% mutate(RATE_BULLY_HI = ifelse(SCH_ENR_HI>=SCH_BULLY_HI & SCH_ENR_HI>=5, 
+                                                 SCH_BULLY_HI/SCH_ENR_HI, NA))
+PA <- PA %>% mutate(RATE_BULLY_BL = ifelse(SCH_ENR_BL>=SCH_BULLY_BL & SCH_ENR_BL>=5, 
+                                                 SCH_BULLY_BL/SCH_ENR_BL, NA))
+PA <- PA %>% mutate(RATE_BULLY_WH = ifelse(SCH_ENR_WH>=SCH_BULLY_WH & SCH_ENR_WH>=5, 
+                                                 SCH_BULLY_WH/SCH_ENR_WH, NA))
+PA <- PA %>% mutate(RATE_BULLY_AS = ifelse(SCH_ENR_AS>=SCH_BULLY_AS & SCH_ENR_AS>=5, 
+                                                 SCH_BULLY_AS/SCH_ENR_AS, NA))
+PA <- PA %>% mutate(RATE_BULLY_M = ifelse(TOT_ENR_M>=TOT_HBREPORTED_SEX_M & TOT_ENR_M>=5, 
+                                                 TOT_HBREPORTED_SEX_M/TOT_ENR_M, NA))
+PA <- PA %>% mutate(RATE_BULLY_F = ifelse(TOT_ENR_F>TOT_HBREPORTED_SEX_F & TOT_ENR_F>5, 
+                                                 TOT_HBREPORTED_SEX_F/TOT_ENR_F, NA))
+
+## ISS rates
+PA <- PA %>% mutate(SCH_ISS_HI = SCH_DISCWODIS_ISS_HI_M + SCH_DISCWODIS_ISS_HI_F)
+PA <- PA %>% mutate(SCH_ISS_BL = SCH_DISCWODIS_ISS_BL_M + SCH_DISCWODIS_ISS_BL_F)
+PA <- PA %>% mutate(SCH_ISS_WH = SCH_DISCWODIS_ISS_WH_M + SCH_DISCWODIS_ISS_WH_F)
+PA <- PA %>% mutate(SCH_ISS_AS = SCH_DISCWODIS_ISS_AS_M + SCH_DISCWODIS_ISS_AS_F)
+
+PA <- PA %>% mutate(RATE_ISS_HI = ifelse(SCH_ENR_HI>=SCH_ISS_HI & SCH_ENR_HI>=5, 
+                                                 SCH_ISS_HI/SCH_ENR_HI, NA))
+PA <- PA %>% mutate(RATE_ISS_BL = ifelse(SCH_ENR_BL>=SCH_ISS_BL & SCH_ENR_BL>=5, 
+                                                 SCH_ISS_BL/SCH_ENR_BL, NA))
+PA <- PA %>% mutate(RATE_ISS_WH = ifelse(SCH_ENR_WH>=SCH_ISS_WH & SCH_ENR_WH>=5, 
+                                                 SCH_ISS_WH/SCH_ENR_WH, NA))
+PA <- PA %>% mutate(RATE_ISS_AS = ifelse(SCH_ENR_AS>=SCH_ISS_AS & SCH_ENR_AS>=5, 
+                                                 SCH_ISS_AS/SCH_ENR_AS, NA))
+PA <- PA %>% mutate(RATE_ISS_M = ifelse(TOT_ENR_M>=TOT_DISCWODIS_ISS_M & TOT_ENR_M>=5, 
+                                                 TOT_DISCWODIS_ISS_M/TOT_ENR_M, NA))
+PA <- PA %>% mutate(RATE_ISS_F = ifelse(TOT_ENR_F>TOT_DISCWODIS_ISS_F & TOT_ENR_F>5, 
+                                                 TOT_DISCWODIS_ISS_F/TOT_ENR_F, NA))
+## Absent rates
+PA <- PA %>% mutate(SCH_ABSENT_HI = SCH_ABSENT_HI_M + SCH_ABSENT_HI_F)
+PA <- PA %>% mutate(SCH_ABSENT_BL = SCH_ABSENT_BL_M + SCH_ABSENT_BL_F)
+PA <- PA %>% mutate(SCH_ABSENT_WH = SCH_ABSENT_WH_M + SCH_ABSENT_WH_F)
+PA <- PA %>% mutate(SCH_ABSENT_AS = SCH_ABSENT_AS_M + SCH_ABSENT_AS_F)
+
+PA <- PA %>% mutate(RATE_ABSENT_HI = ifelse(SCH_ENR_HI>=SCH_ABSENT_HI & SCH_ENR_HI>=5, 
+                                            SCH_ABSENT_HI/SCH_ENR_HI, NA))
+PA <- PA %>% mutate(RATE_ABSENT_BL = ifelse(SCH_ENR_BL>=SCH_ABSENT_BL & SCH_ENR_BL>=5, 
+                                            SCH_ABSENT_BL/SCH_ENR_BL, NA))
+PA <- PA %>% mutate(RATE_ABSENT_WH = ifelse(SCH_ENR_WH>=SCH_ABSENT_WH & SCH_ENR_WH>=5, 
+                                            SCH_ABSENT_WH/SCH_ENR_WH, NA))
+PA <- PA %>% mutate(RATE_ABSENT_AS = ifelse(SCH_ENR_AS>=SCH_ABSENT_AS & SCH_ENR_AS>=5, 
+                                            SCH_ABSENT_AS/SCH_ENR_AS, NA))
+PA <- PA %>% mutate(RATE_ABSENT_M = ifelse(TOT_ENR_M>=TOT_ABSENT_M & TOT_ENR_M>=5, 
+                                            TOT_ABSENT_M/TOT_ENR_M, NA))
+PA <- PA %>% mutate(RATE_ABSENT_F = ifelse(TOT_ENR_F>=TOT_ABSENT_F & TOT_ENR_F>=5, 
+                                            TOT_ABSENT_F/TOT_ENR_F, NA))
+
+PA_bully_rates <- subset(PA, select = c(KEY, RATE_BULLY_HI, RATE_BULLY_BL, RATE_BULLY_WH, RATE_BULLY_AS,
+                                              RATE_BULLY_M, RATE_BULLY_F))
+PA_iss_rates <- subset(PA, select = c(KEY, RATE_ISS_HI, RATE_ISS_BL, RATE_ISS_WH, RATE_ISS_AS,
+                                              RATE_ISS_M, RATE_ISS_F))
+PA_abs_rates <- subset(PA, select = c(KEY, RATE_ABSENT_HI, RATE_ABSENT_BL, RATE_ABSENT_WH, RATE_ABSENT_AS,
+                                              RATE_ABSENT_M, RATE_ABSENT_F))
+
+## New data frame with sums of each ethnicity to give an insight into the data : 
+enroll <- subset(PA, select = c(SCH_ENR_HI, SCH_ENR_BL, SCH_ENR_WH, SCH_ENR_AS, TOT_ENR_M, TOT_ENR_F))
+enroll_sums <- sapply(enroll, sum)
+
+View(enroll_sums)
+
+## Keep rows with fewer than 3 NAs for each indicator (at least 2 ethnicities to compare):
+PA_bully_rates <- PA_bully_rates[rowSums(is.na(PA_bully_rates)) < 3, ]
+PA_iss_rates <- PA_iss_rates[rowSums(is.na(PA_iss_rates)) < 3, ]
+PA_abs_rates <- PA_abs_rates[rowSums(is.na(PA_abs_rates)) < 3, ]
+
+## combine rates into one data frame
+PA_rates <- merge(merge(PA_bully_rates, PA_iss_rates, by="KEY", all.x=TRUE, all.Y=TRUE), 
+                  PA_abs_rates, by="KEY", all.x=TRUE, all.y=TRUE)
+```
+
+
+Show distribution of data, ANOVA, and t-tests:
+
+```{r t tests}
+
+## Show 10 rows of each data frame:
+PA_bully_rates[sample(nrow(PA_bully_rates), 10),]
+PA_iss_rates[sample(nrow(PA_iss_rates), 10),]
+PA_abs_rates[sample(nrow(PA_abs_rates), 10),]
+
+## Gather each into longer datasets for ANOVA and boxplots:
+PA_bully_rates_long <- PA_bully_rates %>% gather(key="subgroup", value="rate", -KEY)
+PA_iss_rates_long <- PA_iss_rates %>% gather(key="subgroup", value="rate", -KEY)
+PA_abs_rates_long <- PA_abs_rates %>% gather(key="subgroup", value="rate", -KEY)
+
+## Show boxplots of distributions
+boxplot(rate ~ subgroup, data = PA_bully_rates_long)
+boxplot(rate ~ subgroup, data = PA_iss_rates_long)
+boxplot(rate ~ subgroup, data = PA_abs_rates_long)
+
+## ANOVA
+summary(aov(rate ~ subgroup, data = PA_bully_rates_long))
+summary(aov(rate ~ subgroup, data = PA_iss_rates_long))
+summary(aov(rate ~ subgroup, data = PA_abs_rates_long))
+## ANOVA suggests that at lease one subgroup is significantly different.
+
+## Show summary of each indicator as well as the Shapiro-Wilk normality test.
+sapply(PA_rates, summary)
+sapply(PA_rates[,-1], shapiro.test)
+## Even though data are non-normal, T-tests are accurate if the sample size is large enough 
+## (there are over 2500 observations).
+
+## Individual t-test p-values:
+
+cat("The rates of males and females reporting bullying on the basis of sex are significantly different with a p-value of", round(t.test(PA_rates$RATE_BULLY_M, PA_rates$RATE_BULLY_F)$p.value, 8))
+
+cat("The rates of Hispanics and Whites reporting bullying on the basis of race are significantly different with a p-value of", round(t.test(PA_rates$RATE_BULLY_HI, PA_rates$RATE_BULLY_WH)$p.value, 8))
+                                                                                                                    cat("The rates of Hispanics and Blacks reporting bullying on the basis of race are significantly different with a p-value of", round(t.test(PA_rates$RATE_BULLY_HI, PA_rates$RATE_BULLY_BL)$p.value, 8))
+                                                                                                                  
+cat("The rates of Hispanics and Asians reporting bullying on the basis of race are not significantly different with a p-value of", round(t.test(PA_rates$RATE_BULLY_HI, PA_rates$RATE_BULLY_AS)$p.value, 8))
+
+cat("The rates of Blacks and Whites reporting bullying on the basis of race are significantly different with a p-value of", round(t.test(PA_rates$RATE_BULLY_BL, PA_rates$RATE_BULLY_WH)$p.value, 8))
+
+cat("The rates of Blacks and Asians reporting bullying on the basis of race are significantly different with a p-value of", round(t.test(PA_rates$RATE_BULLY_BL, PA_rates$RATE_BULLY_AS)$p.value, 8))
+
+cat("The rates of Asians and Whites reporting bullying on the basis of race are not significantly different with a p-value of", round(t.test(PA_rates$RATE_BULLY_AS, PA_rates$RATE_BULLY_WH)$p.value, 8))
+
+
+cat("The rates of males and females with in-school suspensions are significantly different with a p-value of", round(t.test(PA_rates$RATE_ISS_M, PA_rates$RATE_ISS_F)$p.value, 8))
+
+cat("The rates of Hispanics and Whites with in-school suspensions are significantly different with a p-value of", round(t.test(PA_rates$RATE_ISS_HI, PA_rates$RATE_ISS_WH)$p.value, 8))
+
+cat("The rates of Hispanics and Blacks with in-school suspensions are significantly different with a p-value of", round(t.test(PA_rates$RATE_ISS_HI, PA_rates$RATE_ISS_BL)$p.value, 8))
+
+cat("The rates of Hispanics and Asians with in-school suspensions are significantly different with a p-value of", round(t.test(PA_rates$RATE_ISS_HI, PA_rates$RATE_ISS_AS)$p.value, 8))
+
+cat("The rates of Blacks and Whites with in-school suspensions are significantly different with a p-value of", round(t.test(PA_rates$RATE_ISS_BL, PA_rates$RATE_ISS_WH)$p.value, 8))
+
+cat("The rates of Blacks and Asians with in-school suspensions are significantly different with a p-value of", round(t.test(PA_rates$RATE_ISS_BL, PA_rates$RATE_ISS_AS)$p.value, 8))
+
+cat("The rates of Asians and Whites with in-school suspensions are significantly different with a p-value of", round(t.test(PA_rates$RATE_ISS_AS, PA_rates$RATE_ISS_WH)$p.value, 8))
+
+
+cat("The rates of males and females who are chronically absent are not significantly different with a p-value of", round(t.test(PA_rates$RATE_ABSENT_M, PA_rates$RATE_ABSENT_F)$p.value, 8))
+
+cat("The rates of Hispanics and Whites who are chronically absent are significantly different with a p-value of", round(t.test(PA_rates$RATE_ABSENT_HI, PA_rates$RATE_ABSENT_WH)$p.value, 8))
+
+cat("The rates of Hispanics and Blacks who are chronically absent are significantly different with a p-value of", round(t.test(PA_rates$RATE_ABSENT_HI, PA_rates$RATE_ABSENT_BL)$p.value, 8))
+
+cat("The rates of Hispanics and Asians who are chronically absent are significantly different with a p-value of", round(t.test(PA_rates$RATE_ABSENT_HI, PA_rates$RATE_ABSENT_AS)$p.value, 8))
+
+cat("The rates of Blacks and Whites who are chronically absent are significantly different with a p-value of", round(t.test(PA_rates$RATE_ABSENT_BL, PA_rates$RATE_ABSENT_WH)$p.value, 8))
+
+cat("The rates of Blacks and Asians who are chronically absent are significantly different with a p-value of", round(t.test(PA_rates$RATE_ABSENT_BL, PA_rates$RATE_ABSENT_AS)$p.value, 8))
+
+cat("The rates of Asians and Whites who are chronically absent are significantly different with a p-value of", round(t.test(PA_rates$RATE_ABSENT_AS, PA_rates$RATE_ABSENT_WH)$p.value, 8))
+
+
+```
+
+The following text is included as a glossary page on the app:
+
+```{r glossary}
+cat("RATE_BULLY: For ethnicities, the number of students reported as harassed or bullied on the basis of race, color or national origin divided by the total number of enrolled students. For genders, the number of students reported as harassed or bullied on the basis of sex divided by the total number of enrolled students.", "RATE_ISS: The number of students without disabilities who received one or more in-school suspensions divided by the total number of enrolled students.", "RATE_ABSENT: The number of students absent 15 or more days in the school year divided by the total number of enrolled students.", "RATE_LEP: The number of students who have limited English proficiency divided by the total number of enrolled students.", "SAL_PER_TEACH: Total salary expenditures for all teachers divided by the total FTE of teachers.", "TEA_ABSENT: Number of FTE teachers who were absent more than 10 school days during the school year divided by the number of FTE teachers.", "STU_TEA_RATIO: Total number of enrolled students divided by the number of FTE teachers.", "STU_EXP: Total salary expenditures for all personnel plus total non-salary expenditures divided by the total number of enrolled students.", sep="\n\n")
+```
+
+Create histograms of each combination of subgroups and indicators to show on the app:
+
+```{r plots}
+## function to create plots
+
+my_plot <- function(hist1, var1, color1, hist2, var2, color2,x) 
+{
+p <- plot_ly(alpha = 0.6) %>% 
+     add_histogram(name = hist1,x =var1, color = I(color1)) %>% 
+     add_histogram( name = hist2, x =var2,color = I(color2)) %>% 
+     layout(barmode = "overlay", xaxis = list(title = x ), yaxis = list(title = "No. Of Schools") )
+return(p)  
+}
+
+
+## absentiesm rates for different ethnicities
+abs_WH_BL <- my_plot("White", PA_abs_rates$RATE_ABSENT_WH,"purple", "Black", PA_abs_rates$RATE_ABSENT_BL,"yellow","Absenteeism Rates")
+
+abs_WH_HI <- my_plot("White", PA_abs_rates$RATE_ABSENT_WH,"purple", "Hispanic", PA_abs_rates$RATE_ABSENT_HI,"blue","Absenteeism Rates")
+
+abs_WH_AS <- my_plot("White", PA_abs_rates$RATE_ABSENT_WH,"purple", "Asian", PA_abs_rates$RATE_ABSENT_AS,"green","Absenteeism Rates")
+
+abs_BL_HI <- my_plot("Black", PA_abs_rates$RATE_ABSENT_BL,"yellow", "Hispanic", PA_abs_rates$RATE_ABSENT_HI,"blue","Absenteeism Rates")
+
+abs_AS_HI <- my_plot("Asian", PA_abs_rates$RATE_ABSENT_AS,"green", "Hispanic", PA_abs_rates$RATE_ABSENT_HI,"blue","Absenteeism Rates")
+
+abs_BL_AS <- my_plot("Black", PA_abs_rates$RATE_ABSENT_BL,"yellow", "Asian", PA_abs_rates$RATE_ABSENT_AS,"green","Absenteeism Rates")
+
+abs_WH_HI
+abs_WH_AS
+abs_WH_BL
+abs_BL_AS
+abs_BL_HI
+abs_AS_HI
+
+
+## in school suspension (ISS) rates
+
+iss_WH_BL <- my_plot("White", PA_iss_rates$RATE_ISS_WH,"purple", "Black", PA_iss_rates$RATE_ISS_BL,"yellow","In school Suspension(ISS) Rates")
+
+iss_WH_HI <- my_plot("White", PA_iss_rates$RATE_ISS_WH,"purple", "Hispanic", PA_iss_rates$RATE_ISS_HI,"blue","In school Suspension(ISS) Rates")
+
+iss_WH_AS <- my_plot("White", PA_iss_rates$RATE_ISS_WH,"purple", "Asian", PA_iss_rates$RATE_ISS_AS,"green","In school Suspension(ISS) Rates")
+
+iss_BL_HI <- my_plot("Black", PA_iss_rates$RATE_ISS_BL,"yellow", "Hispanic", PA_iss_rates$RATE_ISS_HI,"blue","In school Suspension(ISS) Rates")
+
+iss_AS_HI <- my_plot("Asian", PA_iss_rates$RATE_ISS_AS,"green", "Hispanic", PA_iss_rates$RATE_ISS_HI,"blue","In school Suspension(ISS) Rates")
+
+iss_BL_AS <- my_plot("Black", PA_iss_rates$RATE_ISS_BL,"yellow", "Asian", PA_iss_rates$RATE_ISS_AS,"green","In school Suspension(ISS) Rates")
+
+iss_WH_AS
+iss_WH_HI
+iss_WH_BL
+iss_BL_AS
+iss_BL_HI
+iss_AS_HI
+
+
+
+## bullying rates for different ethnicities
+
+bully_WH_BL <- my_plot("White", PA_bully_rates$RATE_BULLY_WH,"purple", "Black", PA_bully_rates$RATE_BULLY_BL,"yellow","Bullying Rates")
+
+bully_WH_HI <- my_plot("White", PA_bully_rates$RATE_BULLY_WH,"purple", "Hispanic", PA_bully_rates$RATE_BULLY_HI,"blue","Bullying Rates")
+
+bully_WH_AS <- my_plot("White", PA_bully_rates$RATE_BULLY_WH,"purple", "Asian", PA_bully_rates$RATE_BULLY_AS,"green","Bullying Rates")
+
+bully_BL_HI <- my_plot("Black", PA_bully_rates$RATE_BULLY_BL,"yellow", "Hispanic", PA_bully_rates$RATE_BULLY_HI,"blue","Bullying Rates")
+
+bully_AS_HI <- my_plot("Asian", PA_bully_rates$RATE_BULLY_AS,"green", "Hispanic", PA_bully_rates$RATE_BULLY_HI,"blue","Bullying Rates")
+
+bully_BL_AS <- my_plot("Black", PA_bully_rates$RATE_BULLY_BL,"yellow", "Asian", PA_bully_rates$RATE_BULLY_AS,"green","Bullying Rates")
+
+bully_WH_AS
+bully_WH_BL
+bully_WH_HI
+bully_BL_AS
+bully_BL_HI
+bully_AS_HI
+
+# male and female rates for each indicator
+
+bully_M_F <- my_plot("Male", PA_bully_rates$RATE_BULLY_M,"black", "Female", PA_bully_rates$RATE_BULLY_F,"red","Bullying Rates")
+
+iss_M_F <- my_plot("Male", PA_iss_rates$RATE_ISS_M,"black", "Female", PA_iss_rates$RATE_ISS_F,"red","In School Suspension (ISS) Rates")
+
+abs_M_F <- my_plot("Male", PA_abs_rates$RATE_ABSENT_M,"black", "Female", PA_abs_rates$RATE_ABSENT_F,"red","Absenteeism Rates")
+
+bully_M_F
+iss_M_F
+abs_M_F
+
+
+```
+
+
